@@ -1,0 +1,639 @@
+#!/bin/bash
+# Tool for easy ad-hoc management of personal encrypted file systems
+# on Linux using dm-crypt and LUKS.
+#
+# Create, open/mount and unmount/close encrypted file systems on
+# demand through simple commands. It is meant to be invoked as regular
+# user, but due to using Linux kernel block level encryption
+# facilities, the user must have administrative privileges on the
+# system, and sudo will be invoked where required.
+#
+# It is not meant to be used as a system tool to setup general purpose
+# shared encrypted disk partitions.
+#
+# Supports a simple graphical informational user interface through
+# Zenity for all operations exception the 'create' command, which
+# requires an interactive terminal. Attempts to ensure that any failed
+# operations are properly cleaned up, checks for many error conditions
+# and hides the tedious sequence of commands which are necessary to
+# mount and unmount encrypted file systems.
+#
+# Author: Øyvind Stegard <oyvind@stegard.net>
+
+readonly VERSION=1.0
+
+MOUNT_DIR=$HOME/Private
+MOUNT_OPTS=defaults
+DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
+
+readonly DIALOG_TIMEOUT=1
+readonly MAX_PASSPHRASE_ATTEMPTS=3
+readonly LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512'
+
+# Hard code paths to programs which may ask passwords/passphrases or
+# are invoked by sudo. May need to be adapted, depending on Linux
+# distribution. Zenity is only optional.
+readonly MOUNT=/bin/mount
+readonly UMOUNT=/bin/umount
+readonly CRYPTSETUP=/sbin/cryptsetup
+readonly LSBLK=/bin/lsblk
+readonly SUDO=/usr/bin/sudo
+readonly ZEN=/usr/bin/zenity
+
+readonly REQUIRED=($MOUNT $UMOUNT $CRYPTSETUP $LSBLK $SUDO findmnt)
+
+# Show usage message
+# If optional argument is provided, then show usage after an error message.
+msg_usage() {
+    local text
+    read -r -d '' text <<-EOF
+	Use: $(basename $0) COMMAND [OPTIONS]
+
+	Manage and create personal encrypted file systems
+
+	COMMAND may be one of:
+	m, mount   Open encrypted file system and mount it.
+	u, umount  Unmount encrypted file system and close it.
+	t, toggle  Mount if not already mounted, umount otherwise.
+	s, status  Test if mounted and exit with code 0 if so,
+	           or a non-zero code otherwise. No output is produced.
+	c, create  Make a new encrypted file system (terminal interactive wizard)
+
+	Options:
+	-d <dir>, set the mount directory, default: $MOUNT_DIR
+	-i <img>, set path to file/device containing LUKS encrypted file system image
+	          By default, a storage file path is derived from mount directory.
+	-m <opts>, set mount options for file system
+	-s Silent errors, do not fail even if already unmounted or mounted
+	-h Show this help.
+
+	Commands that require root privileges will be invoked using $SUDO.
+	This includes $CRYPTSETUP, $LSBLK, $MOUNT and $UMOUNT.
+
+	Version $VERSION
+EOF
+    local dialog_type_arg=--info
+    if [ "$1" ]; then
+        dialog_type_arg=--error
+        text="E: $*
+
+$text"
+    fi
+
+    if [ "$use_tty" ]; then
+        echo "$text"
+    else
+        $ZEN $dialog_type_arg --text="$text" --title="$DIALOG_TITLE" --no-markup --no-wrap 2>/dev/null
+    fi
+}
+
+msg_error() {
+    if [ "$use_tty" ]; then
+        echo >&2 E: "$*"
+    else
+        $ZEN --error --text="E: $*" --title="$DIALOG_TITLE" --no-wrap 2>/dev/null
+    fi
+}
+
+msg() {
+    if [ "$use_tty" ]; then
+        echo "$*"
+    else
+        $ZEN --info --text "$*" --title="$DIALOG_TITLE" --no-wrap --timeout=$DIALOG_TIMEOUT 2>/dev/null
+    fi
+}
+
+# Starts a progress dialog box as a co process if using graphical interface
+# Expects a message as first argument
+msg_progress_init() {
+    if [ "$use_tty" ]; then
+        echo "$@" ..
+    else
+        coproc $ZEN --progress --text="$*" --no-cancel --title "$DIALOG_TITLE" 2>/dev/null
+    fi
+}
+# Set progress status in percent.
+# Expects percentage as first and only argument
+msg_progress_set() {
+    if [ -z "$use_tty" ]; then
+        if [ "${COPROC[1]}" ]; then
+            echo "$1" >&${COPROC[1]}
+            sleep 0.1
+        else
+            return 1
+        fi
+    fi
+}
+# Close any ongoing progress dialog
+msg_progress_close() {
+    # Some hacks to avoid bash printing annoying job control status to stderr
+    if [ "$COPROC_PID" ]; then
+        exec 3>&2          # 3 is now a copy of 2
+        exec 2> /dev/null  # 2 now points to /dev/null
+        kill $COPROC_PID
+        wait $COPROC_PID
+        exec 2>&3          # restore stderr to saved
+        exec 3>&-          # close saved version
+    fi
+}
+
+setup_sudo_askpass() {
+    ASKPASS_SCRIPT=
+    if [ -z "$SUDO_ASKPASS" ]; then
+        # Make a temporary sudo askpass program using zenity
+        ASKPASS_SCRIPT=$(mktemp --suffix=-askpass.sh)
+        echo '#!/bin/sh' >> $ASKPASS_SCRIPT
+        echo "exec $ZEN --entry --hide-text --text='Enter password for sudo:' --title='Admin privileges' 2>/dev/null" >> $ASKPASS_SCRIPT
+        chmod +x $ASKPASS_SCRIPT
+        export SUDO_ASKPASS=$ASKPASS_SCRIPT
+    fi
+}
+
+# Ask user for passphrase, puts value in variable pp
+pp_ask() {
+    pp=
+    if [ "$use_tty" ]; then
+        read -s -p "Passphrase: " pp
+        echo
+    else
+        pp=$($ZEN --entry --text='File system encryption passphrase:              ' --hide-text --title="$DIALOG_TITLE" 2>/dev/null)
+    fi
+}
+pp_clear() {
+    pp=00000000
+    for ((i=0; i<248; i++)); do
+        pp=${pp}0
+    done
+}
+
+# Invoke command as super user
+do_as_root() {
+    if [ "$use_tty" ]; then
+        $SUDO "$@"
+    else
+        $SUDO -A "$@"
+    fi
+}
+
+# 1st param: default mount directory
+make_fsimage_path() {
+    echo "$(dirname -- "$1")/.$(basename -- "$1"|tr -d '[\t .]')fs"
+}
+# 1st param: fsimage path
+# Echoes unique device mapper name
+get_device_mapper_name() {
+    local is_blockdev=
+    [ -b "$1" ] && is_blockdev=1
+    local uuid=$(${is_blockdev:+do_as_root }$CRYPTSETUP luksUUID "$1" 2>/dev/null)
+    [ "$uuid" ] && echo "luks-$uuid" || return 1
+}
+# 1st param: mount point
+# Prints device path to stdout if mounted
+device_mapper_path_from_mounted_fs() {
+    findmnt -o SOURCE -n -M "$1"|grep ^/dev/mapper
+}
+# 1st param: mount point
+is_mounted() {
+    findmnt -o SOURCE -n -M "$1" 2>/dev/null|grep -q ^/dev/mapper
+}
+
+# Initiate mount of private fs
+# Returns non-zero code on failure, 0 otherwise.
+cmd_mount() {
+    if ! [ -d "$MOUNT_DIR" ]; then
+        msg_error "Mount dir $MOUNT_DIR does not exist"
+        return 1
+    fi
+    if is_mounted "$MOUNT_DIR"; then
+        [ "$OPT_SILENT" ] && return 0
+        msg_error "Already mounted at $MOUNT_DIR"
+        return 1
+    fi
+    local dm_name=$(get_device_mapper_name "$ENCRYPTED_FS_IMG")
+    if [ -z "$dm_name" ]; then
+        msg_error "Failed to obtain LUKS UUID from storage $ENCRYPTED_FS_IMG"
+        return 2
+    fi
+    local dm_path=/dev/mapper/$dm_name
+    if [ -b "$dm_path" ]; then
+        msg_error "A DM device already exists at $dm_path"
+        return 2
+    fi
+    local status= output
+
+    if [ "$use_tty" ]; then
+        do_as_root $CRYPTSETUP open --type luks "$ENCRYPTED_FS_IMG" "$dm_name"
+        if [ $? -eq 0 ] && [ -b "$dm_path" ]; then
+            status=cryptsetup_opened
+        else
+            msg_error "Could not setup encrypted device mapping"
+            status=cryptsetup_failed
+        fi
+    else
+        local attempt=0
+        while [ $attempt -lt $MAX_PASSPHRASE_ATTEMPTS ]; do
+            pp_ask
+            if [ $? -ne 0 ]; then
+                # Dialog aborted by user
+                status=cryptsetup_aborted
+                break
+            fi
+            msg_progress_init 'Opening encrypted device ..            '
+            msg_progress_set 50
+
+            do_as_root $CRYPTSETUP open --type luks "$ENCRYPTED_FS_IMG" "$dm_name" <<<"$pp"
+            if [ $? -eq 0 ]; then
+                msg_progress_set 75
+                status=cryptsetup_opened
+                pp_clear
+                break # successful opening of the encrypted device
+            fi
+            pp_clear
+            msg_progress_close
+            attempt=$((attempt+1))
+        done
+        if [ "$status" != "cryptsetup_opened" ] && [ "$status" != "cryptsetup_aborted" ]; then
+            msg_progress_close
+            msg_error "Could not open encrypted device"
+        fi
+    fi
+
+    if [ "$status" = cryptsetup_opened ]; then
+        # Attempt mount
+        case "$(do_as_root $LSBLK -dn -o FSTYPE "$dm_path")" in
+            vfat)
+                MOUNT_OPTS=${MOUNT_OPTS:+$MOUNT_OPTS,}uid=$USER,dmask=0077,fmask=0177 ;;
+            ext2)
+                MOUNT_OPTS=${MOUNT_OPTS:+$MOUNT_OPTS,}sync ;;
+        esac
+            
+        local output
+        output=$(do_as_root $MOUNT -o "$MOUNT_OPTS" "$dm_path" "$MOUNT_DIR" 2>&1)
+        if [ $? -eq 0 ]; then
+            status=mounted
+            msg_progress_set 100
+            [ -z "$use_tty" ] && sleep 0.5
+            msg_progress_close
+        else
+            msg_progress_close
+            msg_error "Failed to mount: $output"
+        fi
+    fi
+
+    case $status in
+        mounted)
+            return 0
+            ;;
+        cryptsetup_opened)
+            # Cleanup: close luks device in case mount failed
+            do_as_root $CRYPTSETUP close "$dm_name"
+            ;&
+        cryptsetup_aborted|cryptsetup_failed)
+            return 2
+            ;;
+    esac
+}
+
+cmd_umount() {
+    if ! [ -d "$MOUNT_DIR" ]; then
+        msg_error "Mount dir $MOUNT_DIR does not exist"
+        return 1
+    fi
+    if ! is_mounted "$MOUNT_DIR"; then
+        [ "$OPT_SILENT" ] && return 0
+        msg_error "Cannot umount: $MOUNT_DIR is not mounted."
+        return 1
+    fi
+    
+    if type lsof &>/dev/null && lsof "$MOUNT_DIR" 1>/dev/null 2>&1; then
+        msg_error "Will not attempt unmount due to file system busy."
+        return 2
+    fi
+
+    local dm_path=$(device_mapper_path_from_mounted_fs "$MOUNT_DIR")
+    if [ -z "$dm_path" ]; then
+        msg_error "Unable to determine device mapper path of mount $MOUNT_DIR"
+        return 2
+    fi
+    local dm_name=$(basename -- "$dm_path")
+
+    msg_progress_init "Unmounting and closing $MOUNT_DIR"
+    msg_progress_set 40
+
+    output=$(do_as_root $UMOUNT "$MOUNT_DIR" 2>&1)
+    if [ $? -ne 0 ]; then
+        msg_progress_close
+        msg_error "Failed to unmount: $output"
+        return 2
+    fi
+
+    msg_progress_set 60
+
+    output=$(do_as_root $CRYPTSETUP close "$dm_name" 2>&1)
+    if [ $? -ne 0 ]; then
+        msg_progress_close
+        msg_error "Failed to close DM device: $output"
+        return 2
+    fi
+
+    msg_progress_set 100
+    [ -z "$use_tty" ] && sleep 0.5
+}
+
+cmd_toggle() {
+    if is_mounted "$MOUNT_DIR"; then
+        cmd_umount
+    else
+        cmd_mount
+    fi
+}
+
+cmd_create() {
+    if [ -z "$use_tty" ]; then
+        msg_error "Create command needs an interactive terminal."
+        return 1
+    fi
+
+    umask 0077
+
+    echo "# Create a new encrypted file system"
+    echo "Use <CTRL+C> to abort wizard."
+    echo
+
+    local new_fsimg new_mountdir size=1G is_blockdev=
+    new_mountdir=${OPT_MOUNT_DIR:-"$(pwd)/Private"}
+    new_fsimg=${OPT_FS_IMG:-"$(make_fsimage_path "$new_mountdir")"}
+    
+    echo '## Enter directory path where it should be mounted:'
+    read -e -i "$new_mountdir" -p 'Path> ' new_mountdir
+    if ! [ -d "$(dirname -- "$new_mountdir")" ]; then
+        echo >&2 "E: parent directory of mount dir does not exist: $(dirname -- "$new_mountdir")"
+        return 2
+    fi
+
+    echo '## Enter a file or block device path to use as storage:'
+    read -e -i "$new_fsimg" -p "Path> " new_fsimg
+
+    # Resolve to abspaths
+    new_mountdir="$(cd "$(dirname -- "$new_mountdir")";pwd)/$(basename -- "$new_mountdir")"
+    new_fsimg="$(cd "$(dirname -- "$new_fsimg")";pwd)/$(basename -- "$new_fsimg")"
+
+    local blockdev blockdev_name blockdev_size blockdev_type
+    if [ -b "$new_fsimg" ]; then
+        is_blockdev=1
+        echo "Using block device $new_fsimg as storage, determining size .."
+        blockdev=( $(do_as_root $LSBLK -dbpn -o SIZE,NAME,TYPE "$new_fsimg") )
+        blockdev_size=${blockdev[0]}
+        blockdev_name=${blockdev[1]}
+        blockdev_type=${blockdev[2]}
+        size=$((blockdev_size / 1024 / 1024))
+    elif ! [ -e "$new_fsimg" ]; then
+        echo "Using new file $new_fsimg as storage"
+    elif [ -f "$new_fsimg" ]; then
+        echo >&2 "E: a file already exists at $new_fsimg"
+        return 2
+    else
+        echo >&2 "E: cannot create storage at $new_fsimg"
+    fi
+
+    if ! [ "$is_blockdev" ]; then
+        echo '## Enter desired size of storage file in in mega og gigabytes:'
+        read -e -i $size -p 'Size(xM or xG)> ' size
+        if [ -z "$size" ]; then
+            echo >&2 "E: must specify size"
+            return 2
+        elif echo $size|grep -qE '^[0-9]+M$'; then
+            size=${size%M}
+        elif echo $size|grep -qE '^[0-9]+G$'; then
+            size=$((${size%G} * 1024))
+        elif ! (echo $size|grep -qE '^[0-9]+$'); then
+             echo >&2 "E: invalid size specification: $size"
+             return 2
+        fi
+    fi
+
+    echo '## Select file system type (choose ext4 if unsure):'
+    local selection fstype
+    select selection in ext4 ext2 vfat; do
+        fstype=$selection
+        [ "$fstype" ] && break
+    done
+
+    echo
+    echo '## Summary of parameters:'
+    echo "Mount at:            $new_mountdir"
+    if [ "$is_blockdev" ]; then
+        echo "Using block device:  $new_fsimg"
+        echo 'WARNING: existing data on block device will be destroyed'
+        if [ "$blockdev_type" = disk ]; then
+            echo 'WARNING: block device is a raw disk, perhaps you meant to specify a partition ?'
+        fi
+    else
+        echo "Using storage file:  $new_fsimg"
+    fi
+    echo "File system:         $fstype"
+    echo "Size:                $size M"
+    echo
+    read -p 'Proceed ? [y/N]> ' answer
+    case $answer in [yY]|[Yy][eE][sS]) : ;; *) echo 'Abort.'; return 2 ;; esac
+
+    echo "## Creating directory $new_mountdir .."
+    mkdir -p "$new_mountdir" || { echo >&2 "E: failed to create directory $new_mountdir"; return 2; }
+    if ! [ -e "$new_fsimg" ]; then
+        echo "## Creating empty file at $new_fsimg .."
+        touch "$new_fsimg" || { echo >&2 "E: failed to create empty file at $new_fsimg"; return 2; }
+    fi
+
+    echo "## Filling storage with pseudo-random data, this can take a while .."
+    ${is_blockdev:+do_as_root }dd if=/dev/urandom of="$new_fsimg" bs=1M ${size:+count=$size}
+    if [ $? -ne 0 ]; then
+        echo >&2 "E: storage preparation failed"
+        return 2
+    fi
+    echo
+    
+    echo "## Setting up LUKS on $new_fsimg .."
+    ${is_blockdev:+do_as_root }$CRYPTSETUP $LUKSFORMAT_OPTIONS luksFormat "$new_fsimg"
+    if [ $? -ne 0 ]; then
+        echo >&2 "E: LUKS formatting failed"
+        return 2
+    fi
+    echo
+
+    local dm_name=$(get_device_mapper_name "$new_fsimg")
+    if [ -z "$dm_name" ]; then
+        echo >&2 "Failed to get suitable device mapper name from $new_fsimg"
+        return 2
+    fi
+    local dm_path=/dev/mapper/$dm_name
+    if [ -b "$dm_path" ]; then
+        echo >&2 "E: a DM device already exists at $dm_path, cannot continue"
+        return 2
+    fi
+    
+    echo "## Opening encrypted device .."
+    do_as_root $CRYPTSETUP open --type luks "$new_fsimg" "$dm_name"
+    if [ $? -ne 0 ]; then
+        echo >&2 "E: failed to open newly formatted LUKS device"
+        return 2
+    fi
+    echo
+
+    echo "## Creating file system .."
+    local label=$(basename -- "$new_mountdir")
+    case $fstype in
+        ext2|ext4) do_as_root mkfs.${fstype} -m0 -L "$label" "$dm_path" ;;
+        vfat) do_as_root mkfs.vfat -n "$(echo "$label"|tr '[:lower:]' '[:upper:]')" "$dm_path" ;;
+    esac
+    if [ $? -ne 0 ]; then
+        echo >&2 "E: file system creation failed"
+        return 2
+    fi
+
+    if [ "$fstype" != vfat ]; then
+        echo "## Mounting and adjusting permissions .."
+        do_as_root $MOUNT -o $MOUNT_OPTS "$dm_path" "$new_mountdir"
+        if [ $? -ne 0 ]; then
+            echo >&2 "E: failed to mount newly created file system"
+            return 2
+        fi
+        do_as_root chown $USER "$new_mountdir"
+        do_as_root chmod 700 "$new_mountdir"
+        if [ $? -ne 0 ]; then
+            echo >&2 "E: failed adjust permissions on $new_mountdir"
+            return 2
+        fi
+        echo "## Unmounting .."
+        do_as_root $UMOUNT "$new_mountdir"
+        if [ $? -ne 0 ]; then
+            echo >&2 "E: failed to unmount"
+            return 2
+        fi
+    fi
+
+    echo "## Closing encrypted device .."
+    do_as_root $CRYPTSETUP close "$dm_name"
+    if [ $? -ne 0 ]; then
+        echo >&2 "E: failed to close newly created encrypted device"
+        return 2
+    fi
+
+    echo "## Completed the process."
+    echo "## To mount the newly created encrypted file system, use command:"
+    echo
+    if [ "$(make_fsimage_path "$new_mountdir")" = "$new_fsimg" ]; then
+        echo "    $(basename -- $0) mount -d '$new_mountdir'"
+    else
+        echo "    $(basename -- $0) mount -i '$new_fsimg' -d '$new_mountdir'"
+    fi
+    echo
+    echo "## To unmount and close the encrypted file system, use command:"
+    echo
+    echo "    $(basename -- $0) umount -d '$new_mountdir'"
+    return 0
+}
+
+##################
+## Begin execution
+##################
+
+if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && { ! [ -t 1 ] || ! [ -t 0 ];} ; then
+    use_tty=
+else
+    use_tty=1
+fi
+
+for command in ${REQUIRED[*]}; do
+    type "$command" &>/dev/null || msg_error "Command '$command' is required. See top of script $0 to adapt binary paths."
+done
+
+setup_sudo_askpass
+
+# Setup exit handler for cleanup
+exit_handler() {
+    test -n "$COPROC_PID" && kill $COPROC_PID &>/dev/null # function 'msg_progress_init' may create a coproc
+    test -n "$ASKPASS_SCRIPT" && rm -f "$ASKPASS_SCRIPT"
+}
+trap exit_handler EXIT
+
+# parse arguments
+cmdargs=()
+OPT_SILENT=
+OPT_MOUNT_DIR=
+OPT_FS_IMG=
+# Parse plain command args mixed with option args
+while [ "$1" ]; do
+    while getopts ":hsm:d:i:" option; do
+        case $option in
+            s)
+                OPT_SILENT=1
+                ;;
+            m)
+                MOUNT_OPTS=$OPTARG
+                ;;
+            d)
+                OPT_MOUNT_DIR=$OPTARG
+                ;;
+            i)
+                OPT_FS_IMG=$OPTARG
+                ;;
+            h)
+                msg_usage
+                exit 0
+                ;;
+            ?)
+                msg_usage "Unknown option: $OPTARG"
+                exit 1
+                ;;
+        esac
+    done
+    shift $((OPTIND-1))
+    [ "$1" ] && cmdargs+=("$1")
+    [ $# -gt 0 ] && shift
+    OPTIND=1
+done
+
+# Setup vars:
+MOUNT_DIR=${OPT_MOUNT_DIR:-$MOUNT_DIR}
+ENCRYPTED_FS_IMG=${OPT_FS_IMG:-$(make_fsimage_path "$MOUNT_DIR")}
+DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
+if [ -z "$MOUNT_DIR" ]; then
+    msg_error "Invalid mount dir specified"
+    exit 1
+fi
+
+if [ ${#cmdargs[*]} -gt 1 ]; then
+    msg_usage "Only one command may be provided."
+    exit 1
+elif [ ${#cmdargs[*]} -eq 0 ]; then
+    msg_usage "Need a command."
+    exit 1
+else
+    
+    case ${cmdargs[0]} in
+        m|mount)
+            cmd_mount
+            exit $?
+            ;;
+        u|umount|unmount)
+            cmd_umount
+            exit $?
+            ;;
+        t|toggle)
+            cmd_toggle
+            exit $?
+            ;;
+        s|status)
+            is_mounted "$MOUNT_DIR"
+            exit $?
+            ;;
+        c|create)
+            cmd_create
+            exit $?
+            ;;
+        *)
+            msg_usage "Unknown command: ${cmdargs[0]}"
+            exit 1
+            ;;
+    esac
+fi
