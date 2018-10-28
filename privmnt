@@ -338,6 +338,7 @@ cmd_umount() {
 
     msg_progress_set 100
     [ -z "$use_tty" ] && sleep 0.5
+    return 0
 }
 
 cmd_toggle() {
