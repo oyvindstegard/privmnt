@@ -257,6 +257,9 @@ as all data on the drive will be erased.
 Create an encrypted file system on the drive:
 
     privmnt c -i /dev/sdh -d ~/securethumb
+
+(The mount directory does not matter, you can mount it anywhere you can. It is 
+only asked as a convenience.)
     
 Follow the wizard. The entire thumbdrive will be used as storage.
 
@@ -267,6 +270,12 @@ Mount thumb drive:
 Unmount and secure thumb drive:
 
     privmnt u -d ~/securethumb
+
+The thumb drive will also be mountable using standard operating system 
+procedures for LUKS-encrypted volumes, and likely you will be asked of 
+passphrase by your desktop environment automatically when inserting the thumb 
+drive. Privmnt can be useful when such streamlined integrations are not in 
+place, or you prefer to control the mounting manually.
 
 ## Security considerations
 
