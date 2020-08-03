@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.0
+readonly VERSION=1.1
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -28,7 +28,6 @@ DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
 
 readonly DIALOG_TIMEOUT=1
 readonly MAX_PASSPHRASE_ATTEMPTS=3
-readonly LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512'
 
 # Hard code paths to programs which may ask passwords/passphrases or
 # are invoked by sudo. May need to be adapted, depending on Linux
@@ -41,6 +40,14 @@ readonly SUDO=/usr/bin/sudo
 readonly ZEN=/usr/bin/zenity
 
 readonly REQUIRED=($MOUNT $UMOUNT $CRYPTSETUP $LSBLK $SUDO findmnt)
+
+# For cryptsetup >= 2.X, use "--type luks1" to avoid bug
+# https://www.mail-archive.com/debian-bugs-dist@lists.debian.org/msg1667287.html
+LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512 --type luks1'
+if $CRYPTSETUP --version 2>&1|grep -Eq '\s1\.'; then
+    LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512'
+fi
+readonly LUKSFORMAT_OPTIONS
 
 # Show usage message
 # If optional argument is provided, then show usage after an error message.
@@ -454,7 +461,7 @@ cmd_create() {
     echo
     
     echo "## Setting up LUKS on $new_fsimg .."
-    ${is_blockdev:+do_as_root }$CRYPTSETUP $LUKSFORMAT_OPTIONS luksFormat "$new_fsimg"
+    ${is_blockdev:+do_as_root }$CRYPTSETUP luksFormat $LUKSFORMAT_OPTIONS "$new_fsimg"
     if [ $? -ne 0 ]; then
         echo >&2 "E: LUKS formatting failed"
         return 2
