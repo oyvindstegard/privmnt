@@ -6,8 +6,8 @@ Linux using dm-crypt and LUKS.
 Create, open/mount and unmount/close encrypted file systems on demand
 through very simple commands. It is meant to be invoked as regular
 user, but due to using Linux kernel block level encryption facilities,
-the user must have administrative privileges on the system, and sudo
-will be invoked by privmnt where required. Privmnt attempts to ensure
+the *user must have administrative privileges on the system*, and *sudo
+will be invoked by privmnt where required*. Privmnt attempts to ensure
 that any failed operations are properly cleaned up, checks for many
 error conditions and hides the tedious sequence of commands which are
 necessary to mount, unmount and properly close dm-crypt/LUKS encrypted
@@ -258,7 +258,7 @@ Create an encrypted file system on the drive:
 
     privmnt c -i /dev/sdh -d ~/securethumb
 
-(The mount directory does not matter, you can mount it anywhere you can. It is 
+(The mount directory does not matter, you can mount it anywhere you want. It is 
 only asked as a convenience.)
     
 Follow the wizard. The entire thumbdrive will be used as storage.
