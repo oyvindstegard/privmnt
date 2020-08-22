@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.1
+readonly VERSION=1.2
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -71,6 +71,7 @@ msg_usage() {
 	-i <img>, set path to file/device containing LUKS encrypted file system image
 	          By default, a storage file path is derived from mount directory.
 	-m <opts>, set mount options for file system
+    -k, attempt to kill any processes with files open inside mount, before unmounting
 	-s Silent errors, do not fail even if already unmounted or mounted
 	-h Show this help.
 
@@ -311,10 +312,19 @@ cmd_umount() {
         msg_error "Cannot umount: $MOUNT_DIR is not mounted."
         return 1
     fi
-    
-    if type lsof &>/dev/null && lsof "$MOUNT_DIR" 1>/dev/null 2>&1; then
-        msg_error "Will not attempt unmount due to file system busy."
-        return 2
+
+    if type lsof &>/dev/null && lsof -t "$MOUNT_DIR" &>/dev/null; then
+        if [ "$OPT_KILL" ]; then
+            kill $(lsof -t "$MOUNT_DIR" 2>/dev/null) 2>/dev/null
+            sleep 1
+            if lsof -t "$MOUNT_DIR" &>/dev/null; then
+                msg_error "Will not attempt unmount, failed to kill processes, file system busy"
+                return 2
+            fi
+        else
+            msg_error "Will not attempt unmount due to file system busy."
+            return 2
+        fi
     fi
 
     local dm_path=$(device_mapper_path_from_mounted_fs "$MOUNT_DIR")
@@ -569,12 +579,16 @@ cmdargs=()
 OPT_SILENT=
 OPT_MOUNT_DIR=
 OPT_FS_IMG=
+OPT_KILL=
 # Parse plain command args mixed with option args
 while [ "$1" ]; do
-    while getopts ":hsm:d:i:" option; do
+    while getopts ":hskm:d:i:" option; do
         case $option in
             s)
                 OPT_SILENT=1
+                ;;
+            k)
+                OPT_KILL=1
                 ;;
             m)
                 MOUNT_OPTS=$OPTARG
