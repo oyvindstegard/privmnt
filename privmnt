@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.2
+readonly VERSION=1.2.1
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -71,7 +71,7 @@ msg_usage() {
 	-i <img>, set path to file/device containing LUKS encrypted file system image
 	          By default, a storage file path is derived from mount directory.
 	-m <opts>, set mount options for file system
-    -k, attempt to kill any processes with files open inside mount, before unmounting
+	-k, attempt to kill any processes with files open inside mount, before unmounting
 	-s Silent errors, do not fail even if already unmounted or mounted
 	-h Show this help.
 
