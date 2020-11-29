@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.2.1
+readonly VERSION=1.2.2
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -72,6 +72,7 @@ msg_usage() {
 	          By default, a storage file path is derived from mount directory.
 	-m <opts>, set mount options for file system
 	-k, attempt to kill any processes with files open inside mount, before unmounting
+    -t N, timeout passphrase questions after N seconds.
 	-s Silent errors, do not fail even if already unmounted or mounted
 	-h Show this help.
 
@@ -161,10 +162,10 @@ setup_sudo_askpass() {
 pp_ask() {
     pp=
     if [ "$use_tty" ]; then
-        read -s -p "Passphrase: " pp
+        read ${OPT_TMOUT:+-t $OPT_TMOUT} -s -p "Passphrase: " pp
         echo
     else
-        pp=$($ZEN --entry --text='File system encryption passphrase:              ' --hide-text --title="$DIALOG_TITLE" 2>/dev/null)
+        pp=$($ZEN ${OPT_TMOUT:+--timeout $OPT_TMOUT} --entry --text='File system encryption passphrase:              ' --hide-text --title="$DIALOG_TITLE" 2>/dev/null)
     fi
 }
 pp_clear() {
@@ -230,7 +231,7 @@ cmd_mount() {
     local status= output
 
     if [ "$use_tty" ]; then
-        do_as_root $CRYPTSETUP open --type luks "$ENCRYPTED_FS_IMG" "$dm_name"
+        do_as_root $CRYPTSETUP open ${OPT_TMOUT:+--timeout $OPT_TMOUT} --type luks "$ENCRYPTED_FS_IMG" "$dm_name"
         if [ $? -eq 0 ] && [ -b "$dm_path" ]; then
             status=cryptsetup_opened
         else
@@ -469,7 +470,7 @@ cmd_create() {
         return 2
     fi
     echo
-    
+
     echo "## Setting up LUKS on $new_fsimg .."
     ${is_blockdev:+do_as_root }$CRYPTSETUP luksFormat $LUKSFORMAT_OPTIONS "$new_fsimg"
     if [ $? -ne 0 ]; then
@@ -580,9 +581,10 @@ OPT_SILENT=
 OPT_MOUNT_DIR=
 OPT_FS_IMG=
 OPT_KILL=
+OPT_TMOUT=
 # Parse plain command args mixed with option args
 while [ "$1" ]; do
-    while getopts ":hskm:d:i:" option; do
+    while getopts ":hskmt::d:i:" option; do
         case $option in
             s)
                 OPT_SILENT=1
@@ -598,6 +600,9 @@ while [ "$1" ]; do
                 ;;
             i)
                 OPT_FS_IMG=$OPTARG
+                ;;
+            t)
+                OPT_TMOUT=$OPTARG
                 ;;
             h)
                 msg_usage
