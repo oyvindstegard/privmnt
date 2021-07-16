@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.2.2
+readonly VERSION=1.2.3
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -316,8 +316,10 @@ cmd_umount() {
 
     if type lsof &>/dev/null && lsof -t "$MOUNT_DIR" &>/dev/null; then
         if [ "$OPT_KILL" ]; then
-            kill $(lsof -t "$MOUNT_DIR" 2>/dev/null) 2>/dev/null
-            sleep 1
+            local attempt=1
+            while [ $((attempt++)) -lt 4 ] && kill $(lsof -t "$MOUNT_DIR" 2>/dev/null) 2>/dev/null; do
+                sleep 1
+            done
             if lsof -t "$MOUNT_DIR" &>/dev/null; then
                 msg_error "Will not attempt unmount, failed to kill processes, file system busy"
                 return 2
@@ -621,7 +623,7 @@ while [ "$1" ]; do
 done
 
 # Setup vars:
-MOUNT_DIR=${OPT_MOUNT_DIR:-$MOUNT_DIR}
+MOUNT_DIR=$(cd "${OPT_MOUNT_DIR:-$MOUNT_DIR}" && pwd)
 ENCRYPTED_FS_IMG=${OPT_FS_IMG:-$(make_fsimage_path "$MOUNT_DIR")}
 DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
 if [ -z "$MOUNT_DIR" ]; then
