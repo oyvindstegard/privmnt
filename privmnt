@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.2.3
+readonly VERSION=1.3
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -54,7 +54,7 @@ readonly LUKSFORMAT_OPTIONS
 msg_usage() {
     local text
     read -r -d '' text <<-EOF
-	Use: $(basename $0) COMMAND [OPTIONS]
+	Use: $(basename $0) COMMAND [DIR] [OPTIONS]
 
 	Manage and create personal encrypted file systems
 
@@ -66,13 +66,18 @@ msg_usage() {
 	           or a non-zero code otherwise. No output is produced.
 	c, create  Make a new encrypted file system (terminal interactive wizard)
 
+	DIR is where the encrypted file system is mounted.
+
 	Options:
-	-d <dir>, set the mount directory, default: $MOUNT_DIR
+	-d <dir>, set the mount directory. *Deprecated option*. This is the same as
+	          specifying DIR after COMMAND. Default: $MOUNT_DIR
 	-i <img>, set path to file/device containing LUKS encrypted file system image
 	          By default, a storage file path is derived from mount directory.
 	-m <opts>, set mount options for file system
 	-k, attempt to kill any processes with files open inside mount, before unmounting
-    -t N, timeout passphrase questions after N seconds.
+	-t N, timeout passphrase questions after N seconds.
+	-, attempt to read raw passphrase from stdin without prompting. Only for
+	   mount command. Does not strip trailing newlines.
 	-s Silent errors, do not fail even if already unmounted or mounted
 	-h Show this help.
 
@@ -158,7 +163,7 @@ setup_sudo_askpass() {
     fi
 }
 
-# Ask user for passphrase, puts value in variable pp
+# Ask user for passphrase, puts value in variable pp.
 pp_ask() {
     pp=
     if [ "$use_tty" ]; then
@@ -231,7 +236,7 @@ cmd_mount() {
     local status= output
 
     if [ "$use_tty" ]; then
-        do_as_root $CRYPTSETUP open ${OPT_TMOUT:+--timeout $OPT_TMOUT} --type luks "$ENCRYPTED_FS_IMG" "$dm_name"
+        do_as_root $CRYPTSETUP open ${OPT_STDIN:+--key-file=-} ${OPT_TMOUT:+--timeout $OPT_TMOUT} --type luks "$ENCRYPTED_FS_IMG" "$dm_name"
         if [ $? -eq 0 ] && [ -b "$dm_path" ]; then
             status=cryptsetup_opened
         else
@@ -241,21 +246,28 @@ cmd_mount() {
     else
         local attempt=0
         while [ $attempt -lt $MAX_PASSPHRASE_ATTEMPTS ]; do
-            pp_ask
+            [ "$OPT_STDIN" ] || pp_ask
             if [ $? -ne 0 ]; then
-                # Dialog aborted by user
+                # Dialog aborted by user or failed to read from stdin
                 status=cryptsetup_aborted
                 break
             fi
             msg_progress_init 'Opening encrypted device ..            '
             msg_progress_set 50
 
-            do_as_root $CRYPTSETUP open --type luks "$ENCRYPTED_FS_IMG" "$dm_name" <<<"$pp"
+            if [ "$OPT_STDIN" ]; then
+                do_as_root $CRYPTSETUP open --type luks --key-file=- "$ENCRYPTED_FS_IMG" "$dm_name"
+            else
+                do_as_root $CRYPTSETUP open --type luks "$ENCRYPTED_FS_IMG" "$dm_name" <<<"$pp"
+            fi
             if [ $? -eq 0 ]; then
                 msg_progress_set 75
                 status=cryptsetup_opened
                 pp_clear
                 break # successful opening of the encrypted device
+            elif [ "$OPT_STDIN" ]; then
+                status=cryptsetup_failed
+                break
             fi
             pp_clear
             msg_progress_close
@@ -543,14 +555,14 @@ cmd_create() {
     echo "## To mount the newly created encrypted file system, use command:"
     echo
     if [ "$(make_fsimage_path "$new_mountdir")" = "$new_fsimg" ]; then
-        echo "    $(basename -- $0) mount -d '$new_mountdir'"
+        echo "    $(basename -- $0) mount '$new_mountdir'"
     else
-        echo "    $(basename -- $0) mount -i '$new_fsimg' -d '$new_mountdir'"
+        echo "    $(basename -- $0) mount -i '$new_fsimg' '$new_mountdir'"
     fi
     echo
     echo "## To unmount and close the encrypted file system, use command:"
     echo
-    echo "    $(basename -- $0) umount -d '$new_mountdir'"
+    echo "    $(basename -- $0) umount '$new_mountdir'"
     return 0
 }
 
@@ -558,7 +570,7 @@ cmd_create() {
 ## Begin execution
 ##################
 
-if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && { ! [ -t 1 ] || ! [ -t 0 ];} ; then
+if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && ! [ -t 1 ]; then
     use_tty=
 else
     use_tty=1
@@ -584,6 +596,7 @@ OPT_MOUNT_DIR=
 OPT_FS_IMG=
 OPT_KILL=
 OPT_TMOUT=
+OPT_STDIN=
 # Parse plain command args mixed with option args
 while [ "$1" ]; do
     while getopts ":hskmt::d:i:" option; do
@@ -623,46 +636,53 @@ while [ "$1" ]; do
 done
 
 # Setup vars:
-MOUNT_DIR=$(cd "${OPT_MOUNT_DIR:-$MOUNT_DIR}" && pwd)
+CMD=
+for arg in "${cmdargs[@]}"; do
+    if [ -z "$CMD" ]; then
+        CMD=$arg
+    elif [ "$arg" = - ]; then
+        OPT_STDIN=1
+    else
+        OPT_MOUNT_DIR=$arg
+    fi
+done
+
+MOUNT_DIR=$(cd "${OPT_MOUNT_DIR:-$MOUNT_DIR}" 2>/dev/null && pwd)
 ENCRYPTED_FS_IMG=${OPT_FS_IMG:-$(make_fsimage_path "$MOUNT_DIR")}
 DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
-if [ -z "$MOUNT_DIR" ]; then
-    msg_error "Invalid mount dir specified"
-    exit 1
-fi
 
-if [ ${#cmdargs[*]} -gt 1 ]; then
-    msg_usage "Only one command may be provided."
-    exit 1
-elif [ ${#cmdargs[*]} -eq 0 ]; then
+if [ -z "$CMD" ]; then
     msg_usage "Need a command."
     exit 1
-else
-    
-    case ${cmdargs[0]} in
-        m|mount)
-            cmd_mount
-            exit $?
-            ;;
-        u|umount|unmount)
-            cmd_umount
-            exit $?
-            ;;
-        t|toggle)
-            cmd_toggle
-            exit $?
-            ;;
-        s|status)
-            is_mounted "$MOUNT_DIR"
-            exit $?
-            ;;
-        c|create)
-            cmd_create
-            exit $?
-            ;;
-        *)
-            msg_usage "Unknown command: ${cmdargs[0]}"
-            exit 1
-            ;;
-    esac
+elif [ -z "$MOUNT_DIR" ]; then
+    msg_error "Invalid mount dir specified, directory must exist"
+    exit 1
 fi
+    
+case $CMD in
+    m|mount)
+        cmd_mount
+        exit $?
+        ;;
+    u|umount|unmount)
+        cmd_umount
+        exit $?
+        ;;
+    t|toggle)
+        cmd_toggle
+        exit $?
+        ;;
+    s|status)
+        is_mounted "$MOUNT_DIR"
+        exit $?
+        ;;
+    c|create)
+        cmd_create
+        exit $?
+        ;;
+    *)
+        msg_usage "Unknown command: ${cmdargs[0]}"
+        exit 1
+        ;;
+esac
+

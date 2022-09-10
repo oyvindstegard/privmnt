@@ -55,7 +55,7 @@ the privmnt script directly.
 
 ## Usage
 
-    Use: privmnt COMMAND [OPTIONS]
+    Use: privmnt COMMAND [DIR] [OPTIONS]
 
     Manage and create personal encrypted file systems
 
@@ -67,25 +67,31 @@ the privmnt script directly.
                or a non-zero code otherwise. No output is produced.
     c, create  Make a new encrypted file system (terminal interactive wizard)
 
+    DIR is where the encrypted file system is mounted.
+
     Options:
-    -d <dir>, set the mount directory, default: /home/$USER/Private
+    -d <dir>, set the mount directory. *Deprecated option*. This is the same as
+              specifying DIR after COMMAND. Default: /home/oyvind/Private
     -i <img>, set path to file/device containing LUKS encrypted file system image
               By default, a storage file path is derived from mount directory.
     -m <opts>, set mount options for file system
+    -k, attempt to kill any processes with files open inside mount, before unmounting
+    -t N, timeout passphrase questions after N seconds.
+    -, attempt to read raw passphrase from stdin without prompting. Only for
+       mount command. Does not strip trailing newlines.
     -s Silent errors, do not fail even if already unmounted or mounted
     -h Show this help.
 
     Commands that require root privileges will be invoked using /usr/bin/sudo.
     This includes /sbin/cryptsetup, /bin/lsblk, /bin/mount and /bin/umount.
 
-    Version 1.0
-
 
 ### Create a private file system, with storage in a file
 
 Issue command, and assuming your username is `theuser`:
 
-    privmnt create -d ~/Private
+    mkdir -p ~/Private
+    privmnt create ~/Private
     
 This will start an interactive wizard in the terminal.
 
@@ -95,8 +101,7 @@ This will start an interactive wizard in the terminal.
     ## Enter directory path where it should be mounted:
     Path> /home/theuser/Private
 
-Hit enter to accept the default mount point as specified with option
-`-d`.
+Hit enter to accept the default mount point as specified on the command line.
 
     ## Enter a file or block device path to use as storage:
     Path> /home/theuser/.Privatefs
@@ -199,11 +204,11 @@ now ready to use.
 
     ## To mount the newly created encrypted file system, use command:
 
-        privmnt mount -d '/home/theuser/Private'
+        privmnt mount '/home/theuser/Private'
 
     ## To unmount and close the encrypted file system, use command:
 
-        privmnt umount -d '/home/theuser/Private'
+        privmnt umount '/home/theuser/Private'
 
 The process ends with a description of the commands required to mount
 and access the encrypted file system, and unmount/close it.
@@ -219,7 +224,7 @@ prompt for passphrase and progress status.
 
 Mount at `MOUNTPOINT` with storage in a regular `FILE`:
 
-    privmnt m -d MOUNTPOINT -i FILE
+    privmnt m MOUNTPOINT -i FILE
     
 Specifying `-i FILE` is not necessary if the file exists in the same
 directory as the mount point and is named like the basename of the
@@ -229,7 +234,7 @@ mount point directory with a leading dot and a suffix of "fs".
 
 Unmount encrypted file system mounted at `MOUNTPOINT`:
 
-    privmnt u -d MOUNTPOINT
+    privmnt u MOUNTPOINT
     
 This unmounts the file system and closes the LUKS container.
 
@@ -256,7 +261,8 @@ as all data on the drive will be erased.
 
 Create an encrypted file system on the drive:
 
-    privmnt c -i /dev/sdh -d ~/securethumb
+    mkdir -p ~/securethumb
+    privmnt c -i /dev/sdh ~/securethumb
 
 (The mount directory does not matter, you can mount it anywhere you want. It is 
 only asked as a convenience.)
@@ -265,11 +271,11 @@ Follow the wizard. The entire thumbdrive will be used as storage.
 
 Mount thumb drive:
 
-    privmnt m -i /dev/sdh -d ~/securethumb
+    privmnt m -i /dev/sdh ~/securethumb
     
 Unmount and secure thumb drive:
 
-    privmnt u -d ~/securethumb
+    privmnt u ~/securethumb
 
 The thumb drive will also be mountable using standard operating system 
 procedures for LUKS-encrypted volumes, and likely you will be asked of 
