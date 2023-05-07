@@ -26,7 +26,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=2.1
+readonly VERSION=2.2
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -82,7 +82,7 @@ msg_usage() {
               This option can be used multiple times.
 	-, attempt to read raw passphrase from stdin without prompting. Only for
 	   mount command. Does not strip trailing newlines.
-	-s Silent errors, do not fail even if already unmounted or mounted
+	-s Silent errors, do not fail even if already unmounted or mounted.
 	-h Show this help.
 
 	Commands that require root privileges will be invoked using $SUDO.
@@ -221,7 +221,7 @@ do_as_root() {
 
 # 1st param: default mount directory
 make_fsimage_path() {
-    echo "$(dirname -- "$1")/.$(basename -- "$1"|tr -d '[\t .]')fs"
+    echo "$(dirname -- "$1")/.$(basename -- "${1%fs}"|tr -d '[\t .]')fs"
 }
 # 1st param: fsimage path
 # Echoes unique device mapper name
@@ -622,7 +622,7 @@ OPT_TMOUT=
 OPT_STDIN=
 OPT_LUKSFORMAT_EXTRA_OPTIONS=()
 # Parse plain command args mixed with option args
-while [ "$1" ]; do
+while [ $# -gt 0 ]; do
     while getopts ":hskmt::d:i:f:" option; do
         case $option in
             s)
@@ -657,8 +657,7 @@ while [ "$1" ]; do
         esac
     done
     shift $((OPTIND-1))
-    [ "$1" ] && cmdargs+=("$1")
-    [ $# -gt 0 ] && shift
+    [ $# -gt 0 ] && cmdargs+=("$1") && shift
     OPTIND=1
 done
 
@@ -681,7 +680,7 @@ DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
 if [ -z "$CMD" ]; then
     msg_usage "Need a command."
     exit 1
-elif [ -z "$MOUNT_DIR" ]; then
+elif [ -z "$MOUNT_DIR" -a "${CMD:0:1}" != c ]; then
     msg_error "Invalid mount dir specified, directory must exist"
     exit 1
 fi
