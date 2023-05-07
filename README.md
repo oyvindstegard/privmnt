@@ -74,16 +74,20 @@ the privmnt script directly.
               specifying DIR after COMMAND. Default: /home/oyvind/Private
     -i <img>, set path to file/device containing LUKS encrypted file system image
               By default, a storage file path is derived from mount directory.
-    -m <opts>, set mount options for file system
+    -m <opts>, set mount options for file system.
     -k, attempt to kill any processes with files open inside mount, before unmounting
     -t N, timeout passphrase questions after N seconds.
+        -f <opt>, set extra cryptsetup luksFormat-option used by the create command.
+                  This option can be used multiple times.
     -, attempt to read raw passphrase from stdin without prompting. Only for
        mount command. Does not strip trailing newlines.
-    -s Silent errors, do not fail even if already unmounted or mounted
+    -s Silent errors, do not fail even if already unmounted or mounted.
     -h Show this help.
 
     Commands that require root privileges will be invoked using /usr/bin/sudo.
     This includes /sbin/cryptsetup, /bin/lsblk, /bin/mount and /bin/umount.
+
+    Version 2.2
 
 
 ### Create a private file system, with storage in a file
@@ -134,6 +138,7 @@ Select option 1 to create a standard ext4 file system.
     Using storage file:  /home/theuser/.Privatefs
     File system:         ext4
     Size:                1024 M
+    LUKS format options: --hash=sha512 --pbkdf=argon2id
 
     Proceed ? [y/N]> y
 
@@ -334,10 +339,10 @@ some things to think about:
 
 ## Testing
 
-Privmnt has been tested on Ubuntu 16.04 and Ubuntu 18.04.
+Recent versions of Privmnt have been tested on Ubuntu 20.04 LTS.
 
-If you've tested it on other distributions, I'd like to hear about it,
-so I can update this section with the results.
+If you've tested it on other distributions, I'd like to hear about it, so I can
+update this section with the results.
 
 ## Author
 
