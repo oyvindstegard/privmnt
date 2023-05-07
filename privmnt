@@ -20,7 +20,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=1.3
+readonly VERSION=2.0
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -41,13 +41,9 @@ readonly ZEN=/usr/bin/zenity
 
 readonly REQUIRED=($MOUNT $UMOUNT $CRYPTSETUP $LSBLK $SUDO findmnt)
 
-# For cryptsetup >= 2.X, use "--type luks1" to avoid bug
-# https://www.mail-archive.com/debian-bugs-dist@lists.debian.org/msg1667287.html
-LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512 --type luks1'
-if $CRYPTSETUP --version 2>&1|grep -Eq '\s1\.'; then
-    LUKSFORMAT_OPTIONS='--key-size 512 --hash sha512'
-fi
-readonly LUKSFORMAT_OPTIONS
+readonly LUKSFORMAT_V1_OPTIONS=('--hash' 'sha512')
+readonly LUKSFORMAT_V2_OPTIONS=('--hash=sha512' '--pbkdf=argon2id')
+LUKSFORMAT_OPTIONS= # set by initialize at runtime
 
 # Show usage message
 # If optional argument is provided, then show usage after an error message.
@@ -115,6 +111,32 @@ msg() {
     else
         $ZEN --info --text "$*" --title="$DIALOG_TITLE" --no-wrap --timeout=$DIALOG_TIMEOUT 2>/dev/null
     fi
+}
+
+initialize() {
+    if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && ! [ -t 1 ]; then
+        use_tty=
+    else
+        use_tty=1
+    fi
+
+    for command in ${REQUIRED[*]}; do
+        type "$command" &>/dev/null || { msg_error "Command '$command' is required. See top of script $0 to adapt binary paths."; exit 255; }
+    done
+
+    case $($CRYPTSETUP --version|grep -Eo '[0-9.]+') in
+        2*)
+            LUKSFORMAT_OPTIONS=("${LUKSFORMAT_V2_OPTIONS[@]}")
+            ;;
+        1*)
+            LUKSFORMAT_OPTIONS=("${LUKSFORMAT_V1_OPTIONS[@]}")
+            ;;
+        '')
+            msg_error "Failed to determine version of $CRYPTSETUP"
+            exit 255
+            ;;
+    esac
+    readonly LUKSFORMAT_OPTIONS
 }
 
 # Starts a progress dialog box as a co process if using graphical interface
@@ -486,7 +508,7 @@ cmd_create() {
     echo
 
     echo "## Setting up LUKS on $new_fsimg .."
-    ${is_blockdev:+do_as_root }$CRYPTSETUP luksFormat $LUKSFORMAT_OPTIONS "$new_fsimg"
+    do_as_root $CRYPTSETUP luksFormat "${LUKSFORMAT_OPTIONS[@]}" "$new_fsimg"
     if [ $? -ne 0 ]; then
         echo >&2 "E: LUKS formatting failed"
         return 2
@@ -570,15 +592,7 @@ cmd_create() {
 ## Begin execution
 ##################
 
-if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && ! [ -t 1 ]; then
-    use_tty=
-else
-    use_tty=1
-fi
-
-for command in ${REQUIRED[*]}; do
-    type "$command" &>/dev/null || msg_error "Command '$command' is required. See top of script $0 to adapt binary paths."
-done
+initialize
 
 setup_sudo_askpass
 
