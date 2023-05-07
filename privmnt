@@ -18,9 +18,15 @@
 # and hides the tedious sequence of commands which are necessary to
 # mount and unmount encrypted file systems.
 #
+# The tool has an unopinionated approach to encryption settings when creating
+# new secure file systems, relying as much as possible on cryptsetup defaults,
+# but adjusting a few options. You can find those default options in the
+# variables `LUKSFORMAT_V1_OPTIONS` and `LUKSFORMAT_V2_OPTIONS`. Also, you can
+# supply your own extra `luksFormat` options when using the create command.
+#
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=2.0
+readonly VERSION=2.1
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -69,9 +75,11 @@ msg_usage() {
 	          specifying DIR after COMMAND. Default: $MOUNT_DIR
 	-i <img>, set path to file/device containing LUKS encrypted file system image
 	          By default, a storage file path is derived from mount directory.
-	-m <opts>, set mount options for file system
+	-m <opts>, set mount options for file system.
 	-k, attempt to kill any processes with files open inside mount, before unmounting
 	-t N, timeout passphrase questions after N seconds.
+    -f <opt>, set extra cryptsetup luksFormat-option used by the create command.
+              This option can be used multiple times.
 	-, attempt to read raw passphrase from stdin without prompting. Only for
 	   mount command. Does not strip trailing newlines.
 	-s Silent errors, do not fail even if already unmounted or mounted
@@ -488,6 +496,7 @@ cmd_create() {
     fi
     echo "File system:         $fstype"
     echo "Size:                $size M"
+    echo "LUKS format options: ${LUKSFORMAT_OPTIONS[*]} ${OPT_LUKSFORMAT_EXTRA_OPTIONS[*]}"
     echo
     read -p 'Proceed ? [y/N]> ' answer
     case $answer in [yY]|[Yy][eE][sS]) : ;; *) echo 'Abort.'; return 2 ;; esac
@@ -508,7 +517,7 @@ cmd_create() {
     echo
 
     echo "## Setting up LUKS on $new_fsimg .."
-    do_as_root $CRYPTSETUP luksFormat "${LUKSFORMAT_OPTIONS[@]}" "$new_fsimg"
+    do_as_root $CRYPTSETUP luksFormat "${LUKSFORMAT_OPTIONS[@]}" "${OPT_LUKSFORMAT_EXTRA_OPTIONS[@]}" "$new_fsimg"
     if [ $? -ne 0 ]; then
         echo >&2 "E: LUKS formatting failed"
         return 2
@@ -611,9 +620,10 @@ OPT_FS_IMG=
 OPT_KILL=
 OPT_TMOUT=
 OPT_STDIN=
+OPT_LUKSFORMAT_EXTRA_OPTIONS=()
 # Parse plain command args mixed with option args
 while [ "$1" ]; do
-    while getopts ":hskmt::d:i:" option; do
+    while getopts ":hskmt::d:i:f:" option; do
         case $option in
             s)
                 OPT_SILENT=1
@@ -632,6 +642,9 @@ while [ "$1" ]; do
                 ;;
             t)
                 OPT_TMOUT=$OPTARG
+                ;;
+            f)
+                OPT_LUKSFORMAT_EXTRA_OPTIONS+=("$OPTARG")
                 ;;
             h)
                 msg_usage
