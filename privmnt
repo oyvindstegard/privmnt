@@ -105,6 +105,10 @@ $text"
     fi
 }
 
+has_graphical_session() {
+    test -n "$XDG_SESSION_TYPE" -a "$XDG_SESSION_TYPE" != tty
+}
+
 msg_error() {
     if [ "$use_tty" ]; then
         echo >&2 E: "$*"
@@ -122,7 +126,7 @@ msg() {
 }
 
 initialize() {
-    if test -x $ZEN 1>/dev/null 2>&1 && [ "$DISPLAY" ] && ! [ -t 1 ]; then
+    if test -x $ZEN 1>/dev/null 2>&1 && has_graphical_session && ! [ -t 1 ]; then
         use_tty=
     else
         use_tty=1
@@ -675,7 +679,7 @@ done
 
 MOUNT_DIR=$(cd "${OPT_MOUNT_DIR:-$MOUNT_DIR}" 2>/dev/null && pwd)
 ENCRYPTED_FS_IMG=${OPT_FS_IMG:-$(make_fsimage_path "$MOUNT_DIR")}
-DIALOG_TITLE="$(basename -- "$MOUNT_DIR")"
+DIALOG_TITLE="$(basename -- "$0"): $(sed "s:^$HOME:~:" <<<"$MOUNT_DIR")"
 
 if [ -z "$CMD" ]; then
     msg_usage "Need a command."
