@@ -66,6 +66,7 @@ msg_usage() {
 	t, toggle  Mount if not already mounted, umount otherwise.
 	s, status  Test if mounted and exit with code 0 if so,
 	           or a non-zero code otherwise. No output is produced.
+    l, list    List encrypted file systems that are mounted.
 	c, create  Make a new encrypted file system (terminal interactive wizard)
 
 	DIR is where the encrypted file system is mounted.
@@ -243,6 +244,41 @@ device_mapper_path_from_mounted_fs() {
 # 1st param: mount point
 is_mounted() {
     findmnt -o SOURCE -n -M "$1" 2>/dev/null|grep -q ^/dev/mapper
+}
+
+# List encrypted file systems
+cmd_list() {
+    local capture
+    capture=$(findmnt -n -l -o fstype,source,target|grep /dev/mapper/luks|(
+                  while read fstype device mountpoint; do
+                      local status=$(do_as_root $CRYPTSETUP status "$device")
+                      if [ $? -ne 0 ]; then
+                          continue
+                      fi
+                      
+                      declare -A statusfields
+                      while IFS=: read -r k v; do
+                          k=$(echo "$k"|sed -E 's/^\s*|\s*$//')
+                          v=$(echo "$v"|sed -E 's/^\s+|\s+$//')
+                          statusfields["$k"]="$v"
+                      done < <(echo "$status")
+
+                      local dev="${statusfields[device]}"
+                      if [ "${statusfields[loop]}" ]; then
+                          dev="${statusfields[loop]}"
+                      fi
+                      printf "%s [%s, %s] on %s\n" "$dev" "${statusfields[type]}" "${statusfields[cipher]}" "$mountpoint"
+                  done
+              )
+           )
+    
+    [ "$capture" ] && message="$capture" || message="No mounted LUKS devices found."
+    
+    if [ "$use_tty" ]; then
+        echo "$message"
+    else
+        $ZEN --info --text="$message" --title="List of mounted LUKS devices" --no-markup --no-wrap 2>/dev/null
+    fi
 }
 
 # Initiate mount of private fs
@@ -708,6 +744,10 @@ case $CMD in
         ;;
     c|create)
         cmd_create
+        exit $?
+        ;;
+    l|list)
+        cmd_list
         exit $?
         ;;
     *)
