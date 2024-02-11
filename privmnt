@@ -79,8 +79,8 @@ msg_usage() {
 	-m <opts>, set mount options for file system.
 	-k, attempt to kill any processes with files open inside mount, before unmounting
 	-t N, timeout passphrase questions after N seconds.
-    -f <opt>, set extra cryptsetup luksFormat-option used by the create command.
-              This option can be used multiple times.
+	-f <opt>, set extra cryptsetup luksFormat-option used by the create command.
+	          This option can be used multiple times.
 	-, attempt to read raw passphrase from stdin without prompting. Only for
 	   mount command. Does not strip trailing newlines.
 	-s Silent errors, do not fail even if already unmounted or mounted.
