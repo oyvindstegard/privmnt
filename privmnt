@@ -26,7 +26,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=2.2
+readonly VERSION=2.3
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
