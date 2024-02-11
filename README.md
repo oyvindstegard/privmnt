@@ -65,6 +65,7 @@ the privmnt script directly.
     t, toggle  Mount if not already mounted, umount otherwise.
     s, status  Test if mounted and exit with code 0 if so,
                or a non-zero code otherwise. No output is produced.
+    l, list    List encrypted file systems that are mounted.
     c, create  Make a new encrypted file system (terminal interactive wizard)
 
     DIR is where the encrypted file system is mounted.
@@ -87,7 +88,7 @@ the privmnt script directly.
     Commands that require root privileges will be invoked using /usr/bin/sudo.
     This includes /sbin/cryptsetup, /bin/lsblk, /bin/mount and /bin/umount.
 
-    Version 2.2
+    Version 2.3
 
 
 ### Create a private file system, with storage in a file
