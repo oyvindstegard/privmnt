@@ -26,7 +26,7 @@
 #
 # Author: Øyvind Stegard <oyvind@stegard.net>
 
-readonly VERSION=2.3
+readonly VERSION=2.4
 
 MOUNT_DIR=$HOME/Private
 MOUNT_OPTS=defaults
@@ -127,7 +127,7 @@ msg() {
 }
 
 initialize() {
-    if test -x $ZEN 1>/dev/null 2>&1 && has_graphical_session && ! [ -t 1 ]; then
+    if test -x $ZEN 1>/dev/null 2>&1 && has_graphical_session && ! [ -t 0 ]; then
         use_tty=
     else
         use_tty=1
@@ -239,24 +239,24 @@ get_device_mapper_name() {
 # 1st param: mount point
 # Prints device path to stdout if mounted
 device_mapper_path_from_mounted_fs() {
-    findmnt -o SOURCE -n -M "$1"|grep ^/dev/mapper
+    findmnt -o SOURCE -n -M "$1"|grep ^/dev/mapper/luks
 }
 # 1st param: mount point
 is_mounted() {
-    findmnt -o SOURCE -n -M "$1" 2>/dev/null|grep -q ^/dev/mapper
+    findmnt -o SOURCE -n -M "$1" 2>/dev/null|grep -q ^/dev/mapper/luks
 }
 
 # List encrypted file systems
 cmd_list() {
     local capture
-    capture=$(findmnt -n -l -o fstype,source,target|grep /dev/mapper/luks|(
+    capture=$(findmnt -n -l -o fstype,source,target|grep /dev/mapper/luks|sort -k3|(
                   while read fstype device mountpoint; do
                       local status=$(do_as_root $CRYPTSETUP status "$device")
                       if [ $? -ne 0 ]; then
                           continue
                       fi
                       
-                      declare -A statusfields
+                      declare -A statusfields=()
                       while IFS=: read -r k v; do
                           k=$(echo "$k"|sed -E 's/^\s*|\s*$//')
                           v=$(echo "$v"|sed -E 's/^\s+|\s+$//')
@@ -267,9 +267,9 @@ cmd_list() {
                       if [ "${statusfields[loop]}" ]; then
                           dev="${statusfields[loop]}"
                       fi
-                      printf "%s [%s, %s] on %s\n" "$dev" "${statusfields[type]}" "${statusfields[cipher]}" "$mountpoint"
+                      printf "%s\t[%s,%s,%s]\ton\t%s\n" "$dev" "${statusfields[type]}" "${statusfields[cipher]}" "$fstype" "$mountpoint"
                   done
-              )
+              ) | column -t -s '	'
            )
     
     [ "$capture" ] && message="$capture" || message="No mounted LUKS devices found."

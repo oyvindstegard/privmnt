@@ -53,6 +53,22 @@ the top of the script, and make sure they are present on the system.
 If the paths are wrong, adjust to suit your Linux distro by editing
 the privmnt script directly.
 
+I recommend adding passwordless sudo privileges when using this tool, because
+several cryptsetup operations require root privileges to function, and you will
+be prompted for your password potentially multiple times for a single privmnt
+invocation. You can avoid that by adding the following to
+`/etc/sudoers.d/MY_USERNAME-privmnt`, where `MY_USERNAME` should be replaced by
+your actual username:
+
+    $ sudo visudo /etc/sudoers.d/privmnt-MY_USERNAME
+
+add:
+
+    Cmnd_Alias PRIVMNT = /sbin/cryptsetup *, /bin/lsblk *, /bin/mount *, /bin/umount *
+    MY_USERNAME ALL=NOPASSWD: PRIVMNT
+
+Save and exit. Sudo will validate the syntax.
+
 ## Usage
 
     Use: privmnt COMMAND [DIR] [OPTIONS]
@@ -88,7 +104,7 @@ the privmnt script directly.
     Commands that require root privileges will be invoked using /usr/bin/sudo.
     This includes /sbin/cryptsetup, /bin/lsblk, /bin/mount and /bin/umount.
 
-    Version 2.3
+    Version 2.4
 
 
 ### Create a private file system, with storage in a file
