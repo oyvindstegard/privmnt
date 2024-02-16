@@ -54,20 +54,10 @@ If the paths are wrong, adjust to suit your Linux distro by editing
 the privmnt script directly.
 
 I recommend adding passwordless sudo privileges when using this tool, because
-several cryptsetup operations require root privileges to function, and you will
-be prompted for your password potentially multiple times for a single privmnt
-invocation. You can avoid that by adding the following to
-`/etc/sudoers.d/MY_USERNAME-privmnt`, where `MY_USERNAME` should be replaced by
-your actual username:
-
-    $ sudo visudo /etc/sudoers.d/privmnt-MY_USERNAME
-
-add:
-
-    Cmnd_Alias PRIVMNT = /sbin/cryptsetup *, /bin/lsblk *, /bin/mount *, /bin/umount *
-    MY_USERNAME ALL=NOPASSWD: PRIVMNT
-
-Save and exit. Sudo will validate the syntax.
+several `cryptsetup` operations require root privileges to function, and you
+will be prompted for your password potentially multiple times for a single
+privmnt invocation. Se [setting up
+sudo](#setting-up-sudo-to-avoid-password-prompts).
 
 ## Usage
 
@@ -356,7 +346,7 @@ some things to think about:
 
 ## Testing
 
-Recent versions of Privmnt have been tested on Ubuntu 20.04 LTS.
+Recent versions of Privmnt have been tested on Ubuntu 20.04 and 22.04 LTS.
 
 If you've tested it on other distributions, I'd like to hear about it, so I can
 update this section with the results.
